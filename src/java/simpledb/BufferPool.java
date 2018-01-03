@@ -46,7 +46,7 @@ public class BufferPool {
         }
     }
 
-    LRUCache<PageId, Page> pageCache;
+    private LRUCache<PageId, Page> pageCache;
 
     /** Bytes per page, including header. */
     private static final int DEFAULT_PAGE_SIZE = 4096;

@@ -1,5 +1,7 @@
 package simpledb;
 
+import java.util.Arrays;
+
 /** Unique identifier for HeapPage objects. */
 public class HeapPageId implements PageId {
 
@@ -43,7 +45,7 @@ public class HeapPageId implements PageId {
      */
     public int hashCode() {
         // some code goes here
-        throw new UnsupportedOperationException("implement this");
+        return Arrays.asList(tableId, pgNo).hashCode();
     }
 
     /**
