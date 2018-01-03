@@ -149,7 +149,7 @@ public class HeapFile implements DbFile {
 
                 while (++currPgNo < numPages())
                 {
-                    iterator = ((HeapPage)readPage(new HeapPageId(getId(), currPgNo))).iterator();
+                    iterator = getPage().iterator();
                     if(iterator.hasNext())
                         return iterator.next();
                 }
@@ -160,13 +160,17 @@ public class HeapFile implements DbFile {
             @Override
             public void rewind() throws DbException, TransactionAbortedException {
                 currPgNo = 0;
-                iterator = ((HeapPage)readPage(new HeapPageId(getId(), currPgNo))).iterator();
+                iterator = getPage().iterator();
             }
 
             @Override
             public void close() {
                 currPgNo = 0;
                 iterator = null;
+            }
+
+            private HeapPage getPage() throws TransactionAbortedException, DbException {
+                return (HeapPage)Database.getBufferPool().getPage(tid, new HeapPageId(getId(), currPgNo), Permissions.READ_ONLY);
             }
 
         };
