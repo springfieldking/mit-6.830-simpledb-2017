@@ -331,7 +331,7 @@ public class HeapPage implements Page {
 
             @Override
             public boolean hasNext() {
-                return findNext() > 0;
+                return findNext() >= 0;
             }
 
             @Override
