@@ -252,15 +252,15 @@ public class HeapPage implements Page {
         int slotId = t.getRecordId().getTupleNumber();
         Tuple ot = tuples[slotId];
 
-        if(ot != t)
-            throw new DbException("tuple slot is already empty");
-
         if(null == ot)
             throw new DbException("tuple slot is already empty");
 
+        if(!t.getRecordId().getPageId().equals(getId()))
+            throw new DbException("this tuple is not on this page");
+
         tuples[slotId] = null;
         markSlotUsed(slotId, false);
-        markDirty(true, new TransactionId());
+        //markDirty(true, new TransactionId());
     }
 
     /**
@@ -284,7 +284,7 @@ public class HeapPage implements Page {
                 tuples[slotId] = t;
 
                 markSlotUsed(slotId, true);
-                markDirty(true, new TransactionId());
+                //markDirty(true, new TransactionId());
                 return;
             }
             slotId ++;
