@@ -160,12 +160,13 @@ public class HeapFile implements DbFile {
     public DbFileIterator iterator(TransactionId tid) {
         // some code goes here
         return new DbFileIterator() {
-
+            private int numPages;
             private int currPgNo;
             private Iterator<Tuple> iterator;
             
             @Override
             public void open() throws DbException, TransactionAbortedException {
+                numPages = numPages();
                 rewind();
             }
 
@@ -173,10 +174,16 @@ public class HeapFile implements DbFile {
             public boolean hasNext() throws DbException, TransactionAbortedException {
                 if(iterator == null)
                     return false;
+                if(iterator.hasNext())
+                    return true;
 
-                if(currPgNo + 1 >= numPages() && !iterator.hasNext())
-                    return false;
-                return true;
+                int tmpPgNo = currPgNo;
+                while (++tmpPgNo < numPages) {
+                    Iterator tmpIterator = getPage(tmpPgNo).iterator();
+                    if(tmpIterator.hasNext())
+                        return true;
+                }
+                return false;
             }
 
             @Override
@@ -187,20 +194,20 @@ public class HeapFile implements DbFile {
                 if(iterator.hasNext())
                     return iterator.next();
 
-                while (++currPgNo < numPages())
+                while (++currPgNo < numPages)
                 {
-                    iterator = getPage().iterator();
+                    iterator = getPage(currPgNo).iterator();
                     if(iterator.hasNext())
                         return iterator.next();
                 }
 
-                return null;
+                throw new NoSuchElementException();
             }
 
             @Override
             public void rewind() throws DbException, TransactionAbortedException {
                 currPgNo = 0;
-                iterator = getPage().iterator();
+                iterator = getPage(currPgNo).iterator();
             }
 
             @Override
@@ -209,8 +216,8 @@ public class HeapFile implements DbFile {
                 iterator = null;
             }
 
-            private HeapPage getPage() throws TransactionAbortedException, DbException {
-                return (HeapPage)Database.getBufferPool().getPage(tid, new HeapPageId(getId(), currPgNo), Permissions.READ_ONLY);
+            private HeapPage getPage(int pPgNo) throws TransactionAbortedException, DbException {
+                return (HeapPage)Database.getBufferPool().getPage(tid, new HeapPageId(getId(), pPgNo), Permissions.READ_ONLY);
             }
 
         };
