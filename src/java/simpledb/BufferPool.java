@@ -227,6 +227,7 @@ public class BufferPool {
     public synchronized void discardPage(PageId pid) {
         // some code goes here
         // not necessary for lab1
+        pageCache.remove(pid);
     }
 
     /**
@@ -236,6 +237,10 @@ public class BufferPool {
     private synchronized  void flushPage(PageId pid) throws IOException {
         // some code goes here
         // not necessary for lab1
+        Page page = pageCache.get(pid);
+        if(page != null) {
+            Database.getCatalog().getDatabaseFile(pid.getTableId()).writePage(page);
+        }
     }
 
     /** Write all pages of the specified transaction to disk.
@@ -252,6 +257,15 @@ public class BufferPool {
     private synchronized  void evictPage() throws DbException {
         // some code goes here
         // not necessary for lab1
+        Page page = null;
+        try {
+            if(page != null) {
+                flushPage(page.getId());
+                discardPage(page.getId());
+            }
+        } catch (IOException e) {
+            throw new DbException("BufferPool.evictPage IOException");
+        }
     }
 
 }
