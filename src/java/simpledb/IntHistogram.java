@@ -7,8 +7,8 @@ public class IntHistogram {
     private int[] buckets;
     private int min;
     private int max;
-    private int count;
-    private double weight;
+    private int ntups;
+    private double width;
 
     /**
      * Create a new IntHistogram.
@@ -31,11 +31,11 @@ public class IntHistogram {
         this.buckets = new int[Math.min(buckets, max - min + 1)];
         this.min = min;
         this.max = max;
-        this.weight = (1. + max - min ) / this.buckets.length;
+        this.width = (1. + max - min ) / this.buckets.length;
     }
 
     private int hash(int value) {
-        return (int)((value - min) / weight);
+        return (int)Math.floor((value - min) / width);
     }
 
     /**
@@ -46,7 +46,7 @@ public class IntHistogram {
     	// some code goes here
         if(min <= v && v <= max) {
             buckets[hash(v)] ++;
-            count ++;
+            ntups++;
         }
     }
 
@@ -68,14 +68,13 @@ public class IntHistogram {
             if(v > max)
                 return 1.0;
 
-            double value = 0;
+            double height  = 0;
             int targetIndex = hash(v);
             for(int index = 0; index < targetIndex; index ++) {
-                value += buckets[index];
+                height  += buckets[index];
             }
-
-            value += (double) buckets[targetIndex] * (v - targetIndex * weight - min) / weight;
-            return  value / count;
+            height  += (double) buckets[targetIndex] / width * (v - targetIndex * width - min) ;
+            return  height / ntups;
         }
         if (op.equals(Predicate.Op.LESS_THAN_OR_EQ)) {
             return estimateSelectivity(Predicate.Op.LESS_THAN, v + 1);
