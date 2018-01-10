@@ -111,7 +111,8 @@ public class JoinOptimizer {
             // HINT: You may need to use the variable "j" if you implemented
             // a join algorithm that's more complicated than a basic
             // nested-loops join.
-            return -1.0;
+            // io cost {cost1 + card1 * cost2} and cpu cost {card1 * card2}
+            return cost1 + card1 * cost2 + card1 * card2;
         }
     }
 
@@ -155,9 +156,19 @@ public class JoinOptimizer {
             String field2PureName, int card1, int card2, boolean t1pkey,
             boolean t2pkey, Map<String, TableStats> stats,
             Map<String, Integer> tableAliasToId) {
-        int card = 1;
         // some code goes here
-        return card <= 0 ? 1 : card;
+        if(joinOp == Predicate.Op.EQUALS) {
+            if(t1pkey) {
+                return card2;
+            } else if (t2pkey)
+            {
+                return card1;
+            } else {
+                return card1>card2?card1:card2;
+            }
+        }
+
+        return card1 * card2 * 30 / 100;
     }
 
     /**
@@ -221,7 +232,31 @@ public class JoinOptimizer {
 
         // some code goes here
         //Replace the following
-        return joins;
+        PlanCache pc = new PlanCache();
+        for(int length = 1; length <= joins.size(); length ++) {
+            for(Set<LogicalJoinNode> s : enumerateSubsets(joins, length)) {
+                CostCard bestPlan = null;
+                for(LogicalJoinNode node : s) {
+                    CostCard cc = computeCostAndCardOfSubplan(stats, filterSelectivities, node, s, bestPlan!=null?bestPlan.cost:Double.MAX_VALUE, pc);
+                    if(bestPlan == null && cc != null) {
+                        bestPlan = cc;
+                    }
+                    if(bestPlan != null && cc != null) {
+                        if(cc.cost < bestPlan.cost)
+                            bestPlan = cc;
+                    }
+                }
+                if (bestPlan != null) {
+                    pc.addPlan(s, bestPlan.cost, bestPlan.card, bestPlan.plan);
+                }
+            }
+        }
+
+        if (explain) {
+            printJoins(joins, pc, stats, filterSelectivities);
+        }
+
+        return pc.getOrder(new HashSet<>(joins));
     }
 
     // ===================== Private Methods =================================
