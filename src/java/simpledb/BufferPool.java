@@ -18,37 +18,43 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class BufferPool {
 
-    private static class LRUCache <K, V> extends LinkedHashMap<K, V> {
-        private int cacheSize;
+    private static class LRUCache {
 
-        public LRUCache()
-        {
-            super(0, 0.75f, true);
-            this.cacheSize = Integer.MAX_VALUE;
-        }
+        final private int cacheSize;
+        final private LinkedHashMap<PageId, Page> pages;
 
         public LRUCache(int cacheSize) {
-            super(cacheSize, 0.75f, true);
             this.cacheSize = cacheSize;
+            pages = new LinkedHashMap(cacheSize, 0.75f, true);
         }
 
-        public int getCacheSize() {
-            return cacheSize;
+        public void add(Page page) {
+            if(pages.size() >= cacheSize) {
+                evict();
+            }
+            pages.put(page.getId(), page);
         }
 
-        public void setCacheSize(int cacheSize) {
-            this.cacheSize = cacheSize;
+        public Page get(PageId pid) {
+            return pages.get(pid);
         }
 
-        protected boolean removeEldestEntry(Map.Entry<K, V> eldest) {
-            return size() > cacheSize;
+        public Page remove(PageId pid) {
+            return pages.remove(pid);
+        }
+
+        public Page evict() {
+            for(Page page : pages.values()) {
+                if(page.isDirty() == null) {
+                    return pages.remove(page.getId());
+                }
+            }
+            return null;
         }
     }
 
     private static class ReadWriteLock {
-        private int reader;
         private int writer;
-
         private Map<TransactionId, Integer> readingTransactions = new HashMap<>();
         private TransactionId writingTid;
 
@@ -57,7 +63,6 @@ public class BufferPool {
                 while(!canGrantReadAccess(tid)) {
                     wait();
                 }
-                reader ++ ;
                 Integer count = readingTransactions.get(tid);
                 if(count == null) count = 0;
                 readingTransactions.put(tid, ++count);
@@ -67,7 +72,6 @@ public class BufferPool {
         }
 
         synchronized public void releaseReadLock(TransactionId tid) {
-            reader --;
             Integer count = readingTransactions.remove(tid);
             if(count != null && count > 0) {
                 readingTransactions.put(tid, --count);
@@ -94,7 +98,7 @@ public class BufferPool {
         }
 
         private boolean isOnlyReader(TransactionId tid) {
-            if(reader == 1 && readingTransactions.containsKey(tid))
+            if(readingTransactions.size() == 1 && readingTransactions.containsKey(tid))
                 return true;
             return false;
         }
@@ -107,7 +111,7 @@ public class BufferPool {
 
         private boolean canGrantWriteAccess(TransactionId tid) {
             if(isOnlyReader(tid)) return true;
-            if(reader > 0) return false;
+            if(readingTransactions.size() > 0) return false;
             if(writingTid == null) return true;
             if(writingTid.equals(tid)) return true;
             return true;
@@ -122,7 +126,7 @@ public class BufferPool {
         }
     }
 
-    private LRUCache<PageId, Page> pageCache;
+    private LRUCache  pageCache;
     private Map<PageId, ReadWriteLock>                  pageLocks       = new ConcurrentHashMap<>();
     private Map<TransactionId, TransactionLockInfo>     transactions    = new ConcurrentHashMap<>();
 
@@ -143,7 +147,7 @@ public class BufferPool {
      */
     public BufferPool(int numPages) {
         // some code goes here
-        pageCache = new LRUCache<>(numPages);
+        pageCache = new LRUCache(numPages);
     }
     
     public static int getPageSize() {
@@ -223,7 +227,7 @@ public class BufferPool {
         Page page = pageCache.get(pid);
         if(page == null) {
             page = Database.getCatalog().getDatabaseFile(pid.getTableId()).readPage(pid);
-            pageCache.put(pid, page);
+            pageCache.add(page);
         }
         return page;
     }
@@ -315,7 +319,7 @@ public class BufferPool {
         List<Page> dirtyPages = Database.getCatalog().getDatabaseFile(tableId).insertTuple(tid, t);
         for(Page page : dirtyPages) {
             page.markDirty(true, tid);
-            pageCache.put(page.getId(), page);
+            pageCache.add(page);
         }
     }
 
@@ -340,7 +344,7 @@ public class BufferPool {
         List<Page> dirtyPages = Database.getCatalog().getDatabaseFile(tableId).deleteTuple(tid, t);
         for(Page page : dirtyPages) {
             page.markDirty(true, tid);
-            pageCache.put(page.getId(), page);
+            pageCache.add(page);
         }
     }
 
@@ -352,7 +356,7 @@ public class BufferPool {
     public synchronized void flushAllPages() throws IOException {
         // some code goes here
         // not necessary for lab1
-
+        
     }
 
     /** Remove the specific page id from the buffer pool.
@@ -396,15 +400,10 @@ public class BufferPool {
     private synchronized  void evictPage() throws DbException {
         // some code goes here
         // not necessary for lab1
-        Page page = null;
-        try {
-            if(page != null) {
-                flushPage(page.getId());
-                discardPage(page.getId());
-            }
-        } catch (IOException e) {
-            throw new DbException("BufferPool.evictPage IOException");
-        }
-    }
+        Page page = pageCache.evict();
 
+        // find no dirty page
+        if(page == null)
+            throw new DbException("BufferPool.evictPage this is no dirty pages");
+    }
 }
