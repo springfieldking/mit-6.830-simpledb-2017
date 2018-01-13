@@ -2,9 +2,7 @@ package simpledb;
 
 import java.io.*;
 
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -47,7 +45,86 @@ public class BufferPool {
         }
     }
 
+    private static class ReadWriteLock {
+        private int reader;
+        private int writer;
+
+        private Map<TransactionId, Integer> readingTransactions = new HashMap<>();
+        private TransactionId writingTid;
+
+        synchronized public void acquireReadLock(TransactionId tid) throws TransactionAbortedException {
+            try{
+                while(!canGrantReadAccess(tid)) {
+                    wait();
+                }
+                reader ++ ;
+                Integer count = readingTransactions.get(tid);
+                if(count == null) count = 0;
+                readingTransactions.put(tid, ++count);
+            } catch (InterruptedException e) {
+                throw new TransactionAbortedException();
+            }
+        }
+
+        synchronized public void releaseReadLock(TransactionId tid) {
+            reader --;
+            Integer count = readingTransactions.remove(tid);
+            if(count != null && count > 0) {
+                readingTransactions.put(tid, --count);
+            }
+            notifyAll();
+        }
+
+        synchronized public void acquireWriteLock(TransactionId tid) throws TransactionAbortedException {
+            try{
+                while (!canGrantWriteAccess(tid)) {
+                    wait();
+                }
+                writingTid = tid;
+                writer ++;
+            } catch (InterruptedException e) {
+                throw new TransactionAbortedException();
+            }
+        }
+
+        synchronized public void releaseWriteLock() {
+            writingTid = null;
+            writer --;
+            notifyAll();
+        }
+
+        private boolean isOnlyReader(TransactionId tid) {
+            if(reader == 1 && readingTransactions.containsKey(tid))
+                return true;
+            return false;
+        }
+
+        private boolean canGrantReadAccess(TransactionId tid) {
+            if(tid.equals(writingTid)) return true;
+            if(writer > 0) return false;
+            return true;
+        }
+
+        private boolean canGrantWriteAccess(TransactionId tid) {
+            if(isOnlyReader(tid)) return true;
+            if(reader > 0) return false;
+            if(writingTid == null) return true;
+            if(writingTid.equals(tid)) return true;
+            return true;
+        }
+    }
+
+    private static class TransactionLockInfo {
+        private Map<PageId, List<Permissions>> oplist = new HashMap<>();
+
+        public Map<PageId, List<Permissions>> getOplist() {
+            return oplist;
+        }
+    }
+
     private LRUCache<PageId, Page> pageCache;
+    private Map<PageId, ReadWriteLock>                  pageLocks       = new ConcurrentHashMap<>();
+    private Map<TransactionId, TransactionLockInfo>     transactions    = new ConcurrentHashMap<>();
 
     /** Bytes per page, including header. */
     private static final int DEFAULT_PAGE_SIZE = 4096;
@@ -101,9 +178,50 @@ public class BufferPool {
     public  Page getPage(TransactionId tid, PageId pid, Permissions perm)
         throws TransactionAbortedException, DbException {
         // some code goes here
+        // get pagelock
+        ReadWriteLock rwlock = pageLocks.get(pid);
+        if(rwlock == null) {
+            synchronized (pid) {
+                rwlock = pageLocks.get(tid);
+                if(rwlock == null) {
+                    rwlock = new ReadWriteLock();
+                    pageLocks.put(pid, rwlock);
+                }
+            }
+        }
+
+        // acquire lock
+        if(perm == Permissions.READ_ONLY ) {
+            rwlock.acquireReadLock(tid);
+        } else {
+            rwlock.acquireWriteLock(tid);
+        }
+
+        // get lockinfo of transactions
+        TransactionLockInfo lockInfo = transactions.get(tid);
+        if(lockInfo == null) {
+            synchronized (tid) {
+                lockInfo = transactions.get(tid);
+                if(lockInfo == null) {
+                    lockInfo = new TransactionLockInfo();
+                    transactions.put(tid, lockInfo);
+                }
+            }
+        }
+
+        // add op of pid to lockinfo
+        synchronized (lockInfo) {
+            List<Permissions> permissions = lockInfo.oplist.get(pid);
+            if(permissions == null) {
+                permissions = new ArrayList<>();
+                lockInfo.getOplist().put(pid, permissions);
+            }
+            permissions.add(perm);
+        }
+
+        // get pages
         Page page = pageCache.get(pid);
-        if(page == null)
-        {
+        if(page == null) {
             page = Database.getCatalog().getDatabaseFile(pid.getTableId()).readPage(pid);
             pageCache.put(pid, page);
         }
@@ -122,6 +240,24 @@ public class BufferPool {
     public  void releasePage(TransactionId tid, PageId pid) {
         // some code goes here
         // not necessary for lab1|lab2
+
+        // get the permissions of pid and remove pid from lockinfo
+        List<Permissions> ops;
+        TransactionLockInfo lockInfo = transactions.get(tid);
+        synchronized (lockInfo) {
+            ops = lockInfo.getOplist().remove(pid);
+        }
+
+        // unlock
+        if(ops == null) return;
+        ReadWriteLock rwLock = pageLocks.get(pid);
+        for(Permissions p : ops) {
+            if(p == Permissions.READ_ONLY) {
+                rwLock.releaseReadLock(tid);
+            } else {
+                rwLock.releaseWriteLock();
+            }
+        }
     }
 
     /**
@@ -138,7 +274,10 @@ public class BufferPool {
     public boolean holdsLock(TransactionId tid, PageId p) {
         // some code goes here
         // not necessary for lab1|lab2
-        return false;
+        TransactionLockInfo lockInfo = transactions.get(tid);
+        synchronized (lockInfo) {
+            return lockInfo.getOplist().containsKey(p);
+        }
     }
 
     /**
