@@ -70,7 +70,7 @@ public class BufferPool {
         synchronized public void acquireReadLock(TransactionId tid) throws TransactionAbortedException {
             try{
                 while(!canGrantReadAccess(tid)) {
-                    wait();
+                    tryWait();
                 }
                 Integer count = readingTransactions.get(tid);
                 if(count == null) count = 0;
@@ -91,7 +91,7 @@ public class BufferPool {
         synchronized public void acquireWriteLock(TransactionId tid) throws TransactionAbortedException {
             try{
                 while (!canGrantWriteAccess(tid)) {
-                    wait();
+                    tryWait();
                 }
                 writeAccesses++;
                 writingTid = tid;
@@ -125,8 +125,17 @@ public class BufferPool {
             if(isOnlyReader(tid)) return true;
             if(readingTransactions.size() > 0) return false;
             if(writingTid == null) return true;
-            if(writingTid == tid) return true;
+            if(writingTid != tid) return false;
             return true;
+        }
+
+        private final static int TIMEOUT = 1000 * 5;
+        private void tryWait() throws InterruptedException, TransactionAbortedException {
+            long start = System.currentTimeMillis();
+            wait(TIMEOUT);
+            long end = System.currentTimeMillis();
+            if((end - start) >= TIMEOUT)
+                throw new TransactionAbortedException();
         }
     }
 
