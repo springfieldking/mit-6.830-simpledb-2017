@@ -29,6 +29,11 @@ public class BufferPool {
         }
 
         synchronized public void tryPut(Page page) throws DbException {
+            if(pages.containsKey(page.getId())) {
+                put(page);
+                return;
+            }
+
             if(pages.size() >= cacheSize) {
                 evict();
             }
@@ -36,25 +41,25 @@ public class BufferPool {
             put(page);
         }
 
-        synchronized public void put(Page page) {
-            pages.put(page.getId(), page);
-        }
-
         synchronized public Page get(PageId pid) {
             return pages.get(pid);
         }
 
-        synchronized public Page discard(PageId pid) {
+        synchronized private void put(Page page) {
+            pages.put(page.getId(), page);
+        }
+
+        synchronized private Page discard(PageId pid) {
             return pages.remove(pid);
         }
 
-        synchronized public Page evict() throws DbException {
+        synchronized private Page evict() throws DbException {
             for(Page page : pages.values()) {
                 if(page.isDirty() == null) {
-                    return pages.remove(page.getId());
+                    return discard(page.getId());
                 }
             }
-            throw new DbException("BufferPool.evictPage this is no dirty pages");
+            throw new DbException("BufferPool.evictPage bufferpool is full");
         }
 
         synchronized public Iterator<Page> iterator() {
@@ -129,7 +134,7 @@ public class BufferPool {
             return true;
         }
 
-        private final static int TIMEOUT = 1000 * 5;
+        private final static int TIMEOUT = 100;
         private void tryWait() throws InterruptedException, TransactionAbortedException {
             long start = System.currentTimeMillis();
             wait(TIMEOUT);
@@ -458,6 +463,9 @@ public class BufferPool {
         // some code goes here
         // not necessary for lab1|lab2
         TransactionLockInfo lockInfo = transactions.get(tid);
+        if(lockInfo == null)
+            return;
+
         Set<PageId> pageIds = new HashSet<>();
         synchronized (lockInfo) {
             pageIds.addAll(lockInfo.getAssociatedPageIds().keySet());
