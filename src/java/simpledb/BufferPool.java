@@ -68,21 +68,38 @@ public class BufferPool {
     }
 
     private static class ReadWriteLock {
+        private static class Blocker {
+            private static final long TIMEOUT_TOTAL_MS       = 1000;
+            private static final long TIMEOUT_INTERVAL_MS    = TIMEOUT_TOTAL_MS/100;
+            private final Object object;
+            private final long start;
+            public Blocker(Object object) {
+                this.object = object;
+                start = System.currentTimeMillis();
+            }
+            public void tryWait() throws TransactionAbortedException {
+                try {
+                    object.wait(TIMEOUT_INTERVAL_MS);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+                if(System.currentTimeMillis() >= start + TIMEOUT_TOTAL_MS)
+                    throw new TransactionAbortedException();
+            }
+        }
+
         private int writeAccesses    = 0;
         private Map<TransactionId, Integer> readingTransactions = new HashMap<>();
         private TransactionId writingTid;
 
         synchronized public void acquireReadLock(TransactionId tid) throws TransactionAbortedException {
-            try{
-                while(!canGrantReadAccess(tid)) {
-                    tryWait();
-                }
-                Integer count = readingTransactions.get(tid);
-                if(count == null) count = 0;
-                readingTransactions.put(tid, ++count);
-            } catch (InterruptedException e) {
-                throw new TransactionAbortedException();
+            Blocker blocker = new Blocker(this);
+            while(!canGrantReadAccess(tid)) {
+                blocker.tryWait();
             }
+            Integer count = readingTransactions.get(tid);
+            if(count == null) count = 0;
+            readingTransactions.put(tid, ++count);
         }
 
         synchronized public void releaseReadLock(TransactionId tid) {
@@ -94,15 +111,12 @@ public class BufferPool {
         }
 
         synchronized public void acquireWriteLock(TransactionId tid) throws TransactionAbortedException {
-            try{
-                while (!canGrantWriteAccess(tid)) {
-                    tryWait();
-                }
-                writeAccesses++;
-                writingTid = tid;
-            } catch (InterruptedException e) {
-                throw new TransactionAbortedException();
+            Blocker blocker = new Blocker(this);
+            while (!canGrantWriteAccess(tid)) {
+                blocker.tryWait();
             }
+            writeAccesses++;
+            writingTid = tid;
         }
 
         synchronized public void releaseWriteLock() {
@@ -132,15 +146,6 @@ public class BufferPool {
             if(writingTid == null) return true;
             if(writingTid != tid) return false;
             return true;
-        }
-
-        private final static int TIMEOUT = 100;
-        private void tryWait() throws InterruptedException, TransactionAbortedException {
-            long start = System.currentTimeMillis();
-            wait(TIMEOUT);
-            long end = System.currentTimeMillis();
-            if((end - start) >= TIMEOUT)
-                throw new TransactionAbortedException();
         }
     }
 
