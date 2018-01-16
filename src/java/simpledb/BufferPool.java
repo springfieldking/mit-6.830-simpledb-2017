@@ -2,6 +2,7 @@ package simpledb;
 
 import java.io.*;
 
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -16,6 +17,150 @@ import java.util.concurrent.ConcurrentHashMap;
  * @Threadsafe, all fields are final
  */
 public class BufferPool {
+
+    private static class LRUCache {
+
+        final private int cacheSize;
+        final private LinkedHashMap<PageId, Page> pages;
+
+        public LRUCache(int cacheSize) {
+            this.cacheSize = cacheSize;
+            pages = new LinkedHashMap(cacheSize, 0.75f, true);
+        }
+
+        synchronized public void tryPut(Page page) throws DbException {
+            if(pages.containsKey(page.getId())) {
+                put(page);
+                return;
+            }
+
+            if(pages.size() >= cacheSize) {
+                evict();
+            }
+
+            put(page);
+        }
+
+        synchronized public Page get(PageId pid) {
+            return pages.get(pid);
+        }
+
+        synchronized private void put(Page page) {
+            pages.put(page.getId(), page);
+        }
+
+        synchronized private Page discard(PageId pid) {
+            return pages.remove(pid);
+        }
+
+        synchronized private Page evict() throws DbException {
+            for(Page page : pages.values()) {
+                if(page.isDirty() == null) {
+                    return discard(page.getId());
+                }
+            }
+            throw new DbException("BufferPool.evictPage bufferpool is full");
+        }
+
+        synchronized public Iterator<Page> iterator() {
+            return pages.values().iterator();
+        }
+    }
+
+    private static class ReadWriteLock {
+        private static class Blocker {
+            private static final long TIMEOUT_TOTAL_MS       = 1000;
+            private static final long TIMEOUT_INTERVAL_MS    = TIMEOUT_TOTAL_MS/100;
+            private final Object object;
+            private final long start;
+            public Blocker(Object object) {
+                this.object = object;
+                start = System.currentTimeMillis();
+            }
+            public void tryWait() throws TransactionAbortedException {
+                try {
+                    object.wait(TIMEOUT_INTERVAL_MS);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+                if(System.currentTimeMillis() >= start + TIMEOUT_TOTAL_MS)
+                    throw new TransactionAbortedException();
+            }
+        }
+
+        private int writeAccesses    = 0;
+        private Map<TransactionId, Integer> readingTransactions = new HashMap<>();
+        private TransactionId writingTid;
+
+        synchronized public void acquireReadLock(TransactionId tid) throws TransactionAbortedException {
+            Blocker blocker = new Blocker(this);
+            while(!canGrantReadAccess(tid)) {
+                blocker.tryWait();
+            }
+            Integer count = readingTransactions.get(tid);
+            if(count == null) count = 0;
+            readingTransactions.put(tid, ++count);
+        }
+
+        synchronized public void releaseReadLock(TransactionId tid) {
+            Integer count = readingTransactions.remove(tid);
+            if(count != null && --count > 0) {
+                readingTransactions.put(tid, count);
+            }
+            notifyAll();
+        }
+
+        synchronized public void acquireWriteLock(TransactionId tid) throws TransactionAbortedException {
+            Blocker blocker = new Blocker(this);
+            while (!canGrantWriteAccess(tid)) {
+                blocker.tryWait();
+            }
+            writeAccesses++;
+            writingTid = tid;
+        }
+
+        synchronized public void releaseWriteLock() {
+            writeAccesses --;
+            if(writeAccesses == 0){
+                writingTid = null;
+            }
+            notifyAll();
+        }
+
+        private boolean isOnlyReader(TransactionId tid) {
+            if(readingTransactions.size() == 1 && readingTransactions.containsKey(tid))
+                return true;
+            return false;
+        }
+
+        private boolean canGrantReadAccess(TransactionId tid) {
+            if(tid == writingTid) return true;
+            if(writingTid != null) return false;
+            if(readingTransactions.containsKey(tid)) return true;
+            return true;
+        }
+
+        private boolean canGrantWriteAccess(TransactionId tid) {
+            if(isOnlyReader(tid)) return true;
+            if(readingTransactions.size() > 0) return false;
+            if(writingTid == null) return true;
+            if(writingTid != tid) return false;
+            return true;
+        }
+    }
+
+    private static class TransactionLockInfo {
+        private Map<PageId, List<Permissions>> associatedPageIds = new HashMap<>();
+
+        public Map<PageId, List<Permissions>> getAssociatedPageIds() {
+            return associatedPageIds;
+        }
+    }
+
+    private LRUCache  pageCache;
+    private Map<PageId, ReadWriteLock>                  pageLocks       = new ConcurrentHashMap<>();
+    private Map<TransactionId, TransactionLockInfo>     transactions    = new ConcurrentHashMap<>();
+
     /** Bytes per page, including header. */
     private static final int DEFAULT_PAGE_SIZE = 4096;
 
@@ -33,6 +178,7 @@ public class BufferPool {
      */
     public BufferPool(int numPages) {
         // some code goes here
+        pageCache = new LRUCache(numPages);
     }
     
     public static int getPageSize() {
@@ -67,7 +213,54 @@ public class BufferPool {
     public  Page getPage(TransactionId tid, PageId pid, Permissions perm)
         throws TransactionAbortedException, DbException {
         // some code goes here
-        return null;
+        // get pagelock
+        ReadWriteLock rwlock = pageLocks.get(pid);
+        if(rwlock == null) {
+            synchronized (pid) {
+                rwlock = pageLocks.get(tid);
+                if(rwlock == null) {
+                    rwlock = new ReadWriteLock();
+                    pageLocks.put(pid, rwlock);
+                }
+            }
+        }
+
+        // acquire lock
+        if(perm == Permissions.READ_ONLY ) {
+            rwlock.acquireReadLock(tid);
+        } else {
+            rwlock.acquireWriteLock(tid);
+        }
+
+        // get lockinfo of transactions
+        TransactionLockInfo lockInfo = transactions.get(tid);
+        if(lockInfo == null) {
+            synchronized (tid) {
+                lockInfo = transactions.get(tid);
+                if(lockInfo == null) {
+                    lockInfo = new TransactionLockInfo();
+                    transactions.put(tid, lockInfo);
+                }
+            }
+        }
+
+        // tryPut op of pid to lockinfo
+        synchronized (lockInfo) {
+            List<Permissions> permissions = lockInfo.getAssociatedPageIds().get(pid);
+            if(permissions == null) {
+                permissions = new ArrayList<>();
+                lockInfo.getAssociatedPageIds().put(pid, permissions);
+            }
+            permissions.add(perm);
+        }
+
+        // get pages
+        Page page = pageCache.get(pid);
+        if(page == null) {
+            page = Database.getCatalog().getDatabaseFile(pid.getTableId()).readPage(pid);
+            pageCache.tryPut(page);
+        }
+        return page;
     }
 
     /**
@@ -82,6 +275,24 @@ public class BufferPool {
     public  void releasePage(TransactionId tid, PageId pid) {
         // some code goes here
         // not necessary for lab1|lab2
+
+        // get the permissions of pid and remove pid from lockinfo
+        List<Permissions> ops;
+        TransactionLockInfo lockInfo = transactions.get(tid);
+        synchronized (lockInfo) {
+            ops = lockInfo.getAssociatedPageIds().remove(pid);
+        }
+
+        // unlock
+        if(ops == null) return;
+        ReadWriteLock rwLock = pageLocks.get(pid);
+        for(Permissions p : ops) {
+            if(p == Permissions.READ_ONLY) {
+                rwLock.releaseReadLock(tid);
+            } else {
+                rwLock.releaseWriteLock();
+            }
+        }
     }
 
     /**
@@ -92,13 +303,36 @@ public class BufferPool {
     public void transactionComplete(TransactionId tid) throws IOException {
         // some code goes here
         // not necessary for lab1|lab2
+        TransactionLockInfo lockInfo = transactions.remove(tid);
+        if(lockInfo == null) return;
+
+        Map<PageId, List<Permissions>> tmpPageIds = new HashMap<>();
+        synchronized (lockInfo) {
+            tmpPageIds.putAll(lockInfo.getAssociatedPageIds());
+        }
+
+        // unlock all
+        for(PageId pid : tmpPageIds.keySet()) {
+            ReadWriteLock rwLock = pageLocks.get(pid);
+            List<Permissions> ops = tmpPageIds.get(pid);
+            for(Permissions p : ops) {
+                if(p == Permissions.READ_ONLY) {
+                    rwLock.releaseReadLock(tid);
+                } else {
+                    rwLock.releaseWriteLock();
+                }
+            }
+        }
     }
 
     /** Return true if the specified transaction has a lock on the specified page */
     public boolean holdsLock(TransactionId tid, PageId p) {
         // some code goes here
         // not necessary for lab1|lab2
-        return false;
+        TransactionLockInfo lockInfo = transactions.get(tid);
+        synchronized (lockInfo) {
+            return lockInfo.getAssociatedPageIds().containsKey(p);
+        }
     }
 
     /**
@@ -112,6 +346,12 @@ public class BufferPool {
         throws IOException {
         // some code goes here
         // not necessary for lab1|lab2
+        if(commit) {
+            flushPages(tid);
+        } else {
+            revertPages(tid);
+        }
+        transactionComplete(tid);
     }
 
     /**
@@ -126,13 +366,18 @@ public class BufferPool {
      * that future requests see up-to-date pages. 
      *
      * @param tid the transaction adding the tuple
-     * @param tableId the table to add the tuple to
-     * @param t the tuple to add
+     * @param tableId the table to tryPut the tuple to
+     * @param t the tuple to tryPut
      */
     public void insertTuple(TransactionId tid, int tableId, Tuple t)
         throws DbException, IOException, TransactionAbortedException {
         // some code goes here
         // not necessary for lab1
+        List<Page> dirtyPages = Database.getCatalog().getDatabaseFile(tableId).insertTuple(tid, t);
+        for(Page page : dirtyPages) {
+            page.markDirty(true, tid);
+            pageCache.tryPut(page);
+        }
     }
 
     /**
@@ -152,6 +397,12 @@ public class BufferPool {
         throws DbException, IOException, TransactionAbortedException {
         // some code goes here
         // not necessary for lab1
+        int tableId = t.getRecordId().getPageId().getTableId();
+        List<Page> dirtyPages = Database.getCatalog().getDatabaseFile(tableId).deleteTuple(tid, t);
+        for(Page page : dirtyPages) {
+            page.markDirty(true, tid);
+            pageCache.tryPut(page);
+        }
     }
 
     /**
@@ -162,7 +413,11 @@ public class BufferPool {
     public synchronized void flushAllPages() throws IOException {
         // some code goes here
         // not necessary for lab1
-
+        Iterator<Page> it = pageCache.iterator();
+        while(it.hasNext()) {
+            Page page = it.next();
+            Database.getCatalog().getDatabaseFile(page.getId().getTableId()).writePage(page);
+        }
     }
 
     /** Remove the specific page id from the buffer pool.
@@ -176,6 +431,7 @@ public class BufferPool {
     public synchronized void discardPage(PageId pid) {
         // some code goes here
         // not necessary for lab1
+        pageCache.discard(pid);
     }
 
     /**
@@ -185,6 +441,10 @@ public class BufferPool {
     private synchronized  void flushPage(PageId pid) throws IOException {
         // some code goes here
         // not necessary for lab1
+        Page page = pageCache.get(pid);
+        if(page != null) {
+            Database.getCatalog().getDatabaseFile(pid.getTableId()).writePage(page);
+        }
     }
 
     /** Write all pages of the specified transaction to disk.
@@ -192,6 +452,33 @@ public class BufferPool {
     public synchronized  void flushPages(TransactionId tid) throws IOException {
         // some code goes here
         // not necessary for lab1|lab2
+        TransactionLockInfo lockInfo = transactions.get(tid);
+        Set<PageId> pageIds = new HashSet<>();
+        synchronized (lockInfo) {
+            pageIds.addAll(lockInfo.getAssociatedPageIds().keySet());
+        }
+        for(PageId pid : pageIds) {
+            flushPage(pid);
+        }
+    }
+
+    /** revert all pages of the specified transaction by restoring the page to its on-disk state
+     */
+    public synchronized  void revertPages(TransactionId tid) throws IOException {
+        // some code goes here
+        // not necessary for lab1|lab2
+        TransactionLockInfo lockInfo = transactions.get(tid);
+        if(lockInfo == null)
+            return;
+
+        Set<PageId> pageIds = new HashSet<>();
+        synchronized (lockInfo) {
+            pageIds.addAll(lockInfo.getAssociatedPageIds().keySet());
+        }
+        for(PageId pid : pageIds) {
+            Page page = Database.getCatalog().getDatabaseFile(pid.getTableId()).readPage(pid);
+            pageCache.put(page);
+        }
     }
 
     /**
@@ -201,6 +488,6 @@ public class BufferPool {
     private synchronized  void evictPage() throws DbException {
         // some code goes here
         // not necessary for lab1
+        Page page = pageCache.evict();
     }
-
 }
