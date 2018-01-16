@@ -67,26 +67,27 @@ public class BufferPool {
         }
     }
 
-    private static class ReadWriteLock {
-        private static class Blocker {
-            private static final long TIMEOUT_TOTAL_MS       = 1000;
-            private static final long TIMEOUT_INTERVAL_MS    = TIMEOUT_TOTAL_MS/100;
-            private final Object object;
-            private final long start;
-            public Blocker(Object object) {
-                this.object = object;
-                start = System.currentTimeMillis();
-            }
-            public void tryWait() throws TransactionAbortedException {
-                try {
-                    object.wait(TIMEOUT_INTERVAL_MS);
-                } catch (InterruptedException e) {
-                    e.printStackTrace();
-                }
-                if(System.currentTimeMillis() >= start + TIMEOUT_TOTAL_MS)
-                    throw new TransactionAbortedException();
-            }
+    private static class Blocker {
+        private static final long TIMEOUT_TOTAL_MS       = 1000;
+        private static final long TIMEOUT_INTERVAL_MS    = TIMEOUT_TOTAL_MS/100;
+        private final Object object;
+        private final long start;
+        public Blocker(Object object) {
+            this.object = object;
+            start = System.currentTimeMillis();
         }
+        public void tryWait() throws TransactionAbortedException {
+            try {
+                object.wait(TIMEOUT_INTERVAL_MS);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+            if(System.currentTimeMillis() >= start + TIMEOUT_TOTAL_MS)
+                throw new TransactionAbortedException();
+        }
+    }
+
+    private static class ReadWriteLock {
 
         private int writeAccesses    = 0;
         private Map<TransactionId, Integer> readingTransactions = new HashMap<>();
