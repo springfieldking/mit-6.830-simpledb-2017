@@ -348,6 +348,7 @@ public class BufferPool {
         // not necessary for lab1|lab2
         if(commit) {
             flushPages(tid);
+            setBeforeImages(tid);
         } else {
             revertPages(tid);
         }
@@ -443,6 +444,13 @@ public class BufferPool {
         // not necessary for lab1
         Page page = pageCache.get(pid);
         if(page != null) {
+            // append an update record to the log, with
+            // a before-image and after-image.
+            TransactionId dirtier = page.isDirty();
+            if (dirtier != null){
+                Database.getLogFile().logWrite(dirtier, page.getBeforeImage(), page);
+                Database.getLogFile().force();
+            }
             Database.getCatalog().getDatabaseFile(pid.getTableId()).writePage(page);
         }
     }
@@ -478,6 +486,20 @@ public class BufferPool {
         for(PageId pid : pageIds) {
             Page page = Database.getCatalog().getDatabaseFile(pid.getTableId()).readPage(pid);
             pageCache.put(page);
+        }
+    }
+
+    private synchronized void setBeforeImages(TransactionId tid) {
+        TransactionLockInfo lockInfo = transactions.get(tid);
+        Set<PageId> pageIds = new HashSet<>();
+        synchronized (lockInfo) {
+            pageIds.addAll(lockInfo.getAssociatedPageIds().keySet());
+        }
+        for(PageId pid : pageIds) {
+            Page page = pageCache.get(pid);
+            // use current page contents as the before-image
+            // for the next transaction that modifies this page.
+            page.setBeforeImage();
         }
     }
 
