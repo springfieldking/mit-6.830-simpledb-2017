@@ -417,7 +417,7 @@ public class BufferPool {
         Iterator<Page> it = pageCache.iterator();
         while(it.hasNext()) {
             Page page = it.next();
-            Database.getCatalog().getDatabaseFile(page.getId().getTableId()).writePage(page);
+            flushPage(page.getId());
         }
     }
 

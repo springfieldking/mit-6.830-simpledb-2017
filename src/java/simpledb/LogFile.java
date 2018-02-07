@@ -467,6 +467,26 @@ public class LogFile {
             synchronized(this) {
                 preAppend();
                 // some code goes here
+                final long begin = tidToFirstLogRecord.get(tid.getId());
+                raf.seek(raf.length() - LONG_SIZE);
+                long logPtr = raf.readLong();
+
+                while (begin < logPtr) {
+                    raf.seek(logPtr);
+                    int logType = raf.readInt();
+                    long tidLong = raf.readLong();
+                    if(tid.getId() == tidLong && UPDATE_RECORD == logType) {
+                        Page before = readPageData(raf);
+                        Database.getCatalog().getDatabaseFile(before.getId().getTableId()).writePage(before);
+                        Database.getBufferPool().discardPage(before.getId());
+                    }
+
+                    raf.seek(logPtr - LONG_SIZE);
+                    logPtr = raf.readLong();
+                }
+
+                // restore
+                raf.seek(currentOffset);
             }
         }
     }
