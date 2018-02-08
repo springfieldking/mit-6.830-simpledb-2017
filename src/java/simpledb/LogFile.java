@@ -514,6 +514,27 @@ public class LogFile {
             synchronized (this) {
                 recoveryUndecided = false;
                 // some code goes here
+                File logFile;
+                File[] matchingFiles = new File(".").listFiles(new FilenameFilter() {
+                    public boolean accept(File dir, String name) {
+                        return name.startsWith("logtmp");
+                    }
+                });
+
+                if(matchingFiles.length > 0) {
+                    List<File> list = Arrays.asList(matchingFiles);
+                    list.sort(new Comparator<File>() {
+                        @Override
+                        public int compare(File o1, File o2) {
+                            return o1.getName().compareTo(o2.getName());
+                        }
+                    });
+                    logFile = list.get(list.size() - 1);
+                } else {
+                    logFile = new File("log");
+                }
+
+                RandomAccessFile logRaf = new RandomAccessFile(logFile, "r");
             }
          }
     }
