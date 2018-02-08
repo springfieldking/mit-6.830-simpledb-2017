@@ -19,50 +19,43 @@ import java.util.concurrent.ConcurrentHashMap;
 public class BufferPool {
 
     private static class LRUCache {
-
         final private int cacheSize;
-        final private LinkedHashMap<PageId, Page> pages;
+        final private Map<PageId, Page> pages;
 
         public LRUCache(int cacheSize) {
             this.cacheSize = cacheSize;
-            pages = new LinkedHashMap(cacheSize, 0.75f, true);
+            pages = new ConcurrentHashMap<>(cacheSize);
         }
 
-        synchronized public void tryPut(Page page) throws DbException {
-            if(pages.containsKey(page.getId())) {
-                put(page);
-                return;
-            }
-
+        public void tryPut(Page page) throws DbException {
+            put(page);
             if(pages.size() >= cacheSize) {
                 evict();
             }
-
-            put(page);
         }
 
-        synchronized public Page get(PageId pid) {
+        public Page get(PageId pid) {
             return pages.get(pid);
         }
 
-        synchronized private void put(Page page) {
+        private void put(Page page) {
             pages.put(page.getId(), page);
         }
 
-        synchronized private Page discard(PageId pid) {
+        private Page remove(PageId pid) {
             return pages.remove(pid);
         }
 
         synchronized private Page evict() throws DbException {
             for(Page page : pages.values()) {
                 if(page.isDirty() == null) {
-                    return discard(page.getId());
+                    return remove(page.getId());
                 }
             }
             throw new DbException("BufferPool.evictPage bufferpool is full");
         }
 
-        synchronized public Iterator<Page> iterator() {
+        public Iterator<Page> iterator() {
             return pages.values().iterator();
         }
     }
@@ -432,7 +425,7 @@ public class BufferPool {
     public synchronized void discardPage(PageId pid) {
         // some code goes here
         // not necessary for lab1
-        pageCache.discard(pid);
+        pageCache.remove(pid);
     }
 
     /**
@@ -485,6 +478,7 @@ public class BufferPool {
         }
         for(PageId pid : pageIds) {
             Page page = Database.getCatalog().getDatabaseFile(pid.getTableId()).readPage(pid);
+            pageCache.remove(page.getId());
             pageCache.put(page);
         }
     }
