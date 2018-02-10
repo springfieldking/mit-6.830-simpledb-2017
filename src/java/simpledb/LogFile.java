@@ -467,28 +467,32 @@ public class LogFile {
             synchronized(this) {
                 preAppend();
                 // some code goes here
-                final long begin = tidToFirstLogRecord.get(tid.getId());
-                raf.seek(raf.length() - LONG_SIZE);
-                long logPtr = raf.readLong();
-
-                while (begin < logPtr) {
-                    raf.seek(logPtr);
-                    int logType = raf.readInt();
-                    long tidLong = raf.readLong();
-                    if(tid.getId() == tidLong && UPDATE_RECORD == logType) {
-                        Page before = readPageData(raf);
-                        Database.getCatalog().getDatabaseFile(before.getId().getTableId()).writePage(before);
-                        Database.getBufferPool().discardPage(before.getId());
-                    }
-
-                    raf.seek(logPtr - LONG_SIZE);
-                    logPtr = raf.readLong();
-                }
-
-                // restore
-                raf.seek(currentOffset);
+                rollback(tid.getId());
             }
         }
+    }
+
+    private void rollback(long tid) throws NoSuchElementException, IOException {
+        final long begin = tidToFirstLogRecord.get(tid);
+        raf.seek(raf.length() - LONG_SIZE);
+        long logPtr = raf.readLong();
+
+        while (begin < logPtr) {
+            raf.seek(logPtr);
+            int logType = raf.readInt();
+            long tidLong = raf.readLong();
+            if(tid == tidLong && UPDATE_RECORD == logType) {
+                Page before = readPageData(raf);
+                Database.getCatalog().getDatabaseFile(before.getId().getTableId()).writePage(before);
+                Database.getBufferPool().discardPage(before.getId());
+            }
+
+            raf.seek(logPtr - LONG_SIZE);
+            logPtr = raf.readLong();
+        }
+
+        // restore
+        raf.seek(currentOffset);
     }
 
     /** Shutdown the logging system, writing out whatever state
@@ -514,27 +518,103 @@ public class LogFile {
             synchronized (this) {
                 recoveryUndecided = false;
                 // some code goes here
-                File logFile;
-                File[] matchingFiles = new File(".").listFiles(new FilenameFilter() {
-                    public boolean accept(File dir, String name) {
-                        return name.startsWith("logtmp");
-                    }
-                });
 
-                if(matchingFiles.length > 0) {
-                    List<File> list = Arrays.asList(matchingFiles);
-                    list.sort(new Comparator<File>() {
-                        @Override
-                        public int compare(File o1, File o2) {
-                            return o1.getName().compareTo(o2.getName());
-                        }
-                    });
-                    logFile = list.get(list.size() - 1);
-                } else {
-                    logFile = new File("log");
+                // currentOffset recover
+                currentOffset = raf.length();
+
+                // Read the last checkpoint, if any.
+                // Scan forward from the checkpoint (or start of log file, if no checkpoint)
+                // to build the set of loser transactions.
+                boolean findLastCheckpoint = false;
+                Set<Long> beginTids = new HashSet<>();
+                Set<Long> endTids = new HashSet<>();
+                raf.seek(raf.length() - LONG_SIZE);
+                long logPtr = raf.readLong();
+                while (!findLastCheckpoint && logPtr > LONG_SIZE) {
+                    raf.seek(logPtr);
+                    int type = raf.readInt();
+                    long record_tid = raf.readLong();
+                    switch (type) {
+                        case UPDATE_RECORD:
+                            break;
+                        case ABORT_RECORD:
+                            endTids.add(record_tid);
+                            break;
+                        case COMMIT_RECORD:
+                            endTids.add(record_tid);
+                            break;
+                        case BEGIN_RECORD:
+                            beginTids.add(record_tid);
+                            break;
+                        case CHECKPOINT_RECORD:
+                            int numXactions = raf.readInt();
+                            while (numXactions-- > 0) {
+                                long xid = raf.readLong();
+                                long xoffset = raf.readLong();
+                                tidToFirstLogRecord.put(xid, xoffset);
+                            }
+                            findLastCheckpoint = true;
+                            break;
+                        default:
+                            break;
+                    }
+                    if(!findLastCheckpoint)
+                    {
+                        raf.seek(logPtr - LONG_SIZE);
+                        logPtr = raf.readLong();
+                    }
                 }
 
-                RandomAccessFile logRaf = new RandomAccessFile(logFile, "r");
+                if(!findLastCheckpoint) {
+                    raf.seek(LONG_SIZE);
+                }
+
+                // Re-do updates during this pass.
+                while (logPtr < currentOffset) {
+                    raf.seek(logPtr);
+                    int type = raf.readInt();
+                    long record_tid = raf.readLong();
+                    switch (type) {
+                        case UPDATE_RECORD:
+                            Page before = readPageData(raf);
+                            Page after = readPageData(raf);
+                            Database.getCatalog().getDatabaseFile(after.getId().getTableId()).writePage(after);
+                            Database.getBufferPool().discardPage(after.getId());
+                            logPtr = raf.getFilePointer();
+                            break;
+                        case ABORT_RECORD:
+                            if (tidToFirstLogRecord.get(record_tid) == null) {
+                                throw new RuntimeException("ABORT: transaction " + record_tid + "is not live");
+                            }
+                            logPtr = raf.getFilePointer();
+                            rollback(record_tid);
+                            tidToFirstLogRecord.remove(record_tid);
+                            break;
+                        case COMMIT_RECORD:
+                            tidToFirstLogRecord.remove(record_tid);
+                            logPtr = raf.getFilePointer();
+                            break;
+                        case BEGIN_RECORD:
+                            tidToFirstLogRecord.put(record_tid, logPtr);
+                            logPtr = raf.getFilePointer();
+                            break;
+                        case CHECKPOINT_RECORD:
+                            int numXactions = raf.readInt();
+                            logPtr = raf.getFilePointer() + numXactions * LONG_SIZE * 2;
+                            break;
+                        default:
+                            break;
+                    }
+
+                    // skip the offset  to next log record
+                    logPtr += LONG_SIZE;
+                }
+
+                // Un-do the updates of loser transactions.
+                beginTids.removeAll(endTids);
+                for(long tid : beginTids) {
+                    rollback(tid);
+                }
             }
          }
     }

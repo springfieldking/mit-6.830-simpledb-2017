@@ -340,7 +340,7 @@ public class BufferPool {
         // some code goes here
         // not necessary for lab1|lab2
         if(commit) {
-            flushPages(tid);
+            //flushPages(tid);
             setBeforeImages(tid);
         } else {
             revertPages(tid);
