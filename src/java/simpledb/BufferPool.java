@@ -340,7 +340,7 @@ public class BufferPool {
         // some code goes here
         // not necessary for lab1|lab2
         if(commit) {
-            //flushPages(tid);
+            flushPages(tid);
             setBeforeImages(tid);
         } else {
             revertPages(tid);
@@ -443,8 +443,10 @@ public class BufferPool {
             if (dirtier != null){
                 Database.getLogFile().logWrite(dirtier, page.getBeforeImage(), page);
                 Database.getLogFile().force();
+
+                page.markDirty(false, null);
+                Database.getCatalog().getDatabaseFile(pid.getTableId()).writePage(page);
             }
-            Database.getCatalog().getDatabaseFile(pid.getTableId()).writePage(page);
         }
     }
 
