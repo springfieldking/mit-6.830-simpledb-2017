@@ -29,9 +29,6 @@ public class BufferPool {
 
         public void tryPut(Page page) throws DbException {
             put(page);
-            if(pages.size() >= cacheSize) {
-                evict();
-            }
         }
 
         public Page get(PageId pid) {
@@ -250,6 +247,9 @@ public class BufferPool {
         // get pages
         Page page = pageCache.get(pid);
         if(page == null) {
+            if(pageCache.pages.size() >= pageCache.cacheSize) {
+                evictPage();
+            }
             page = Database.getCatalog().getDatabaseFile(pid.getTableId()).readPage(pid);
             pageCache.tryPut(page);
         }
@@ -493,9 +493,11 @@ public class BufferPool {
         }
         for(PageId pid : pageIds) {
             Page page = pageCache.get(pid);
-            // use current page contents as the before-image
-            // for the next transaction that modifies this page.
-            page.setBeforeImage();
+            if(page != null) {
+                // use current page contents as the before-image
+                // for the next transaction that modifies this page.
+                page.setBeforeImage();
+            }
         }
     }
 
