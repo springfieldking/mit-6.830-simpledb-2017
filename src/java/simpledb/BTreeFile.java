@@ -284,10 +284,11 @@ public class BTreeFile implements DbFile {
 		}
 
 		//  Copy the middle key up into the parent page
-		Tuple middleTuple = newRightLeaf.iterator().next();
-		BTreeInternalPage parent = getParentWithEmptySlots(tid, dirtypages, page.getParentId(), field);
-		parent.insertEntry(new BTreeEntry(middleTuple.getField(keyField()), page.getId(), newRightLeaf.getId()));
+		Field middleKey = newRightLeaf.iterator().next().getField(keyField());
+		BTreeInternalPage parent = getParentWithEmptySlots(tid, dirtypages, page.getParentId(), middleKey);
 		newRightLeaf.setParentId(parent.getId());
+		page.setParentId(parent.getId());
+		parent.insertEntry(new BTreeEntry(middleKey, page.getId(), newRightLeaf.getId()));
 
 		// update the sibling pointers of all the affected leaf pages.
 		newRightLeaf.setLeftSiblingId(page.getId());
@@ -298,8 +299,13 @@ public class BTreeFile implements DbFile {
 			oldRightLeaf.setLeftSiblingId(newRightLeaf.getId());
 		}
 
+		// update dirtypages
+		dirtypages.put(page.getId(), page);
+		dirtypages.put(newRightLeaf.getId(), newRightLeaf);
+		dirtypages.put(parent.getId(), parent);
+
 		// Return the page into which a tuple with the given key field should be inserted.
-		if (field.compare(Op.GREATER_THAN, middleTuple.getField(keyField()))) {
+		if (field.compare(Op.GREATER_THAN, middleKey)) {
 			return newRightLeaf;
 		} else {
 			return page;
@@ -359,13 +365,21 @@ public class BTreeFile implements DbFile {
 		middleKeyEntry.setLeftChild(page.getId());
 		middleKeyEntry.setRightChild(newRightPage.getId());
 
-		BTreeInternalPage parent = getParentWithEmptySlots(tid, dirtypages, page.getParentId(), field);
+		BTreeInternalPage parent = getParentWithEmptySlots(tid, dirtypages, page.getParentId(), middleKeyEntry.getKey());
 		parent.insertEntry(middleKeyEntry);
+
+		page.setParentId(parent.getId());
+		newRightPage.setParentId(parent.getId());
 
 		// update the parent pointers of all the children moving to the new page.
 		updateParentPointers(tid, dirtypages, page);
 		updateParentPointers(tid, dirtypages, newRightPage);
 		updateParentPointers(tid, dirtypages, parent);
+
+		// update dirtypages
+		dirtypages.put(page.getId(), page);
+		dirtypages.put(newRightPage.getId(), newRightPage);
+		dirtypages.put(parent.getId(), parent);
 
 		// Return the page into which an entry with the given key field should be inserted.
 		if (field.compare(Op.GREATER_THAN, middleKeyEntry.getKey())) {
@@ -789,6 +803,11 @@ public class BTreeFile implements DbFile {
 		updateParentPointers(tid, dirtypages, page);
 		updateParentPointers(tid, dirtypages, leftSibling);
 		updateParentPointers(tid, dirtypages, parent);
+
+		// update dirtypages
+		dirtypages.put(page.getId(), page);
+		dirtypages.put(leftSibling.getId(), leftSibling);
+		dirtypages.put(parent.getId(), parent);
 	}
 	
 	/**
@@ -844,6 +863,11 @@ public class BTreeFile implements DbFile {
 		updateParentPointers(tid, dirtypages, page);
 		updateParentPointers(tid, dirtypages, rightSibling);
 		updateParentPointers(tid, dirtypages, parent);
+
+		// update dirtypages
+		dirtypages.put(page.getId(), page);
+		dirtypages.put(rightSibling.getId(), rightSibling);
+		dirtypages.put(parent.getId(), parent);
 	}
 	
 	/**
@@ -888,6 +912,8 @@ public class BTreeFile implements DbFile {
 		if(leftPage.getRightSiblingId() != null) {
 			BTreeLeafPage rightOfRightPage= (BTreeLeafPage)getPage(tid, dirtypages, leftPage.getRightSiblingId(), Permissions.READ_WRITE);
 			rightOfRightPage.setLeftSiblingId(leftPage.getId());
+			// update dirtypages
+			dirtypages.put(rightOfRightPage.getId(), rightOfRightPage);
 		}
 
 		// make the right page available for reuse
@@ -895,6 +921,10 @@ public class BTreeFile implements DbFile {
 
 		// Delete the entry in the parent corresponding to the two pages that are merging
 		deleteParentEntry(tid, dirtypages, leftPage, parent, parentEntry);
+
+		// update dirtypages
+		dirtypages.put(leftPage.getId(), leftPage);
+		dirtypages.put(parent.getId(), parent);
 	}
 
 	/**
@@ -950,6 +980,10 @@ public class BTreeFile implements DbFile {
 
 		// make the right page available for reuse
 		setEmptyPage(tid, dirtypages, rightPage.getId().getPageNumber());
+
+		// update dirtypages
+		dirtypages.put(leftPage.getId(), leftPage);
+		dirtypages.put(parent.getId(), parent);
 	}
 	
 	/**
