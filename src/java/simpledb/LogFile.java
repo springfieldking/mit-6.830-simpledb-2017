@@ -523,11 +523,7 @@ public class LogFile {
                 currentOffset = raf.length();
 
                 // Read the last checkpoint, if any.
-                // Scan forward from the checkpoint (or start of log file, if no checkpoint)
-                // to build the set of loser transactions.
                 boolean findLastCheckpoint = false;
-                Set<Long> beginTids = new HashSet<>();
-                Set<Long> endTids = new HashSet<>();
                 raf.seek(raf.length() - LONG_SIZE);
                 long logPtr = raf.readLong();
                 while (!findLastCheckpoint && logPtr > LONG_SIZE) {
@@ -538,13 +534,10 @@ public class LogFile {
                         case UPDATE_RECORD:
                             break;
                         case ABORT_RECORD:
-                            endTids.add(record_tid);
                             break;
                         case COMMIT_RECORD:
-                            endTids.add(record_tid);
                             break;
                         case BEGIN_RECORD:
-                            beginTids.add(record_tid);
                             break;
                         case CHECKPOINT_RECORD:
                             int numXactions = raf.readInt();
@@ -570,6 +563,8 @@ public class LogFile {
                 }
 
                 // Re-do updates during this pass.
+                // Scan forward from the checkpoint (or start of log file, if no checkpoint)
+                // to build the set of loser transactions.
                 while (logPtr < currentOffset) {
                     raf.seek(logPtr);
                     int type = raf.readInt();
@@ -583,9 +578,6 @@ public class LogFile {
                             logPtr = raf.getFilePointer();
                             break;
                         case ABORT_RECORD:
-                            if (tidToFirstLogRecord.get(record_tid) == null) {
-                                throw new RuntimeException("ABORT: transaction " + record_tid + "is not live");
-                            }
                             logPtr = raf.getFilePointer();
                             rollback(record_tid);
                             tidToFirstLogRecord.remove(record_tid);
@@ -611,8 +603,7 @@ public class LogFile {
                 }
 
                 // Un-do the updates of loser transactions.
-                beginTids.removeAll(endTids);
-                for(long tid : beginTids) {
+                for(long tid : tidToFirstLogRecord.keySet()) {
                     rollback(tid);
                 }
             }
